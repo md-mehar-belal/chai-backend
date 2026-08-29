@@ -3,13 +3,15 @@ import ApiError from '../utils/ApiError.js';
 import { User } from '../models/user.models.js';
 import { uploadOnCloudinary } from '../utils/cloudinary.js';
 import { ApiResponse } from '../utils/ApiResponse.js';
+import jwt from 'jsonwebtoken';
 
 
 
 const generateAccessAndRefreshTokens = async (userId) => {
   try {
     const user = await User.findById(userId)
-    const { accessToken, refreshToken } = await user.generateAccessAndRefreshTokens();
+
+    const { accessToken, refreshToken } = await user.generateAccessAndRefreshTokens(user._id);
 
     user.refreshToken = refreshToken;
     await user.save({ validateBeforeSave: false });
@@ -20,7 +22,7 @@ const generateAccessAndRefreshTokens = async (userId) => {
   }
 };
 
-const registerUser = asyncHandler(async (req, res, next) => {
+const registerUser = asyncHandler(async (req, res) => {
   // get user details from frontend
   // validate - not empty
   // check if user already exists: username, email
@@ -78,7 +80,7 @@ const registerUser = asyncHandler(async (req, res, next) => {
 
 });
 
-const loginUser = asyncHandler(async (req, res, next) => {
+const loginUser = asyncHandler(async (req, res) => {
   // req body -> data
   // username or email
   // find user in db
@@ -117,7 +119,7 @@ const loginUser = asyncHandler(async (req, res, next) => {
     .json(new ApiResponse(200, { user: loggedInUser, accessToken, refreshToken }, "User logged in successfully"));
 });
 
-const logoutUser = asyncHandler(async (req, res, next) => {
+const logoutUser = asyncHandler(async (req, res) => {
   await User.findByIdAndUpdate(
     req.user._id,
     {
@@ -136,10 +138,42 @@ const logoutUser = asyncHandler(async (req, res, next) => {
   };
 
   return res
-  .status(200)
-  .clearCookie("accessToken", options)
-  .clearCookie("refreshToken", options)
-  .json(new ApiResponse(200, {}, "User logged out successfully"));  
-})
+    .status(200)
+    .clearCookie("accessToken", options)
+    .clearCookie("refreshToken", options)
+    .json(new ApiResponse(200, {}, "User logged out successfully"));
+});
 
-export { registerUser, loginUser, logoutUser };
+const refreshAccessToken = asyncHandler(async (req, res) => {
+  const incomingRefreshToken = req.cookies?.refreshToken || req.body?.refreshToken;
+
+  if (!incomingRefreshToken) {
+    throw new ApiError(401, "Refresh token is required");
+  }
+
+  try {
+    const decodedToken = jwt.verify(incomingRefreshToken, process.env.REFRESH_TOKEN_SECRET);
+
+    const user = await User.findById(decodedToken?._id);
+    if (!user || user.refreshToken !== incomingRefreshToken) {
+      throw new ApiError(401, "Invalid refresh token");
+    }
+
+    const options = {
+      httpOnly: true,
+      secure: true
+    };
+
+    const { accessToken, newRefreshToken } = await user.generateAccessAndRefreshTokens(user._id);
+
+    return res
+      .status(200)
+      .cookie("accessToken", accessToken, options)
+      .cookie("refreshToken", newRefreshToken, options)
+      .json(new ApiResponse(200, { accessToken, refreshToken: newRefreshToken }, "Access token refreshed successfully"));
+  } catch (error) {
+    throw new ApiError(401, error.message || "Invalid refresh token");
+  };
+
+});
+export { registerUser, loginUser, logoutUser, refreshAccessToken };
